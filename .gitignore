@@ -1,2 +1,5 @@
 .idea
 demo.py
+data/FER/cnn_train.csv
+data/CIFAR/cifar-10-batches-py/*
+data/CIFAR/cifar-100-python/*
