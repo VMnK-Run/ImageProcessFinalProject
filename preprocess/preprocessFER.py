@@ -39,7 +39,7 @@ def main():
                 pixel_list = []
                 for pixel in row[1].split():
                     pixel_list.append(int(pixel))
-                public_test_label.append(int(pixel))
+                public_test_label.append(int(row[0]))
                 public_test_x.append(np.asarray(pixel_list).tolist())
 
     print("Training: ", np.shape(train_x))
