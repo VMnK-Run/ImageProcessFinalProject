@@ -9,8 +9,8 @@ from model import VGG19, ResNet18
 import logging
 import colorlog
 import argparse
-from tqdm import tqdm, trange
-from loadData import FERDataSet
+from tqdm import tqdm
+from loadData import FERDataSet, CKDataSet
 import utils
 import os
 import csv
@@ -63,7 +63,12 @@ def train(args, model, train_dataset, device):
     learning_rate_decay_every = 5
     learning_rate_decay_rate = 0.9
 
-    best_acc = 0.0
+    if args.resume:
+        start_epoch = args.start_epoch
+        best_acc = args.best_acc
+    else:
+        start_epoch = 0
+        best_acc = 0.0
 
     # Train!
     logger.info("***** Running training *****")
@@ -74,10 +79,11 @@ def train(args, model, train_dataset, device):
 
     optimizer = optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=5e-4)
     history_path = './log/' + args.model + '_' + args.dataset + '.csv'
-    with open(history_path, 'w', newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_acc", "eval_acc"])
-    for epoch in range(args.epochs):
+    if not args.resume:
+        with open(history_path, 'w', newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_acc", "eval_acc"])
+    for epoch in range(start_epoch, args.epochs):
         if epoch > learning_rate_decay_start >= 0:
             frac = (epoch - learning_rate_decay_start) // learning_rate_decay_every
             decay_factor = learning_rate_decay_rate ** frac
@@ -88,7 +94,6 @@ def train(args, model, train_dataset, device):
         total_num = 0
         correct_num = 0
         train_acc = 0.0
-        eval_acc = 0.0
         avg_loss = 0.0
         bar = tqdm(train_dataloader, total=len(train_dataloader))
         for step, batch in enumerate(bar):
@@ -142,6 +147,9 @@ def train(args, model, train_dataset, device):
 def evaluate(args, model, device):
     if args.dataset == "FER2013":
         eval_dataset = FERDataSet(mode="PublicTest", transform=transform_test)
+        eval_dataloader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, num_workers=0)
+    elif args.dataset == "CK+":
+        eval_dataset = CKDataSet(mode="Validating", transform=transform_test)
         eval_dataloader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, num_workers=0)
     else:
         eval_dataset = None
@@ -200,6 +208,9 @@ def evaluate(args, model, device):
 def test(args, model, device):
     if args.dataset == "FER2013":
         test_dataset = FERDataSet(mode="PrivateTest", transform=transform_test)
+        test_dataloader = DataLoader(test_dataset, batch_size=args.eval_batch_size, shuffle=False, num_workers=0)
+    elif args.dataset == "CK+":
+        test_dataset = CKDataSet(mode="Testing", transform=transform_test)
         test_dataloader = DataLoader(test_dataset, batch_size=args.eval_batch_size, shuffle=False, num_workers=0)
     else:
         test_dataset = None
@@ -270,13 +281,16 @@ def main():
                         help="Number of epochs")
     parser.add_argument("--learning_rate", default=0.01, type=float,
                         help="learning rate")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training")
 
     args = parser.parse_args()
     args.n_gpu = torch.cuda.device_count()
     device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
 
     console_handler = logging.StreamHandler()
-    log_file_name = './log/' + args.model + '_' + args.dataset + '_' + 'train.log' if args.do_train else 'eval.log' if args.do_eval else 'test.log'
+    log_prefix = './log/' + args.model + '_' + args.dataset + '_'
+    log_file_name = log_prefix + 'train.log' if args.do_train else log_prefix + 'eval.log' if args.do_eval else log_prefix + 'test.log'
     file_handler = logging.FileHandler(filename=log_file_name, mode='a', encoding='utf8')
 
     logger.setLevel(logging.DEBUG)
@@ -304,8 +318,18 @@ def main():
         model = None
 
     if args.do_train:
+        if args.resume:
+            model_dir = './models/' + args.model + '_' + args.dataset + '.t7'
+            model.load_state_dict(torch.load(model_dir)['model'])
+            model.to(device)
+            args.best_acc = torch.load(model_dir)['acc']
+            args.start_epoch = torch.load(model_dir)['epoch'] + 1
+
         if args.dataset == "FER2013":
             train_dataset = FERDataSet("Training", transform=transform_train)
+            train(args, model, train_dataset, device)
+        elif args.dataset == 'CK+':
+            train_dataset = CKDataSet("Training", transform=transform_train)
             train(args, model, train_dataset, device)
 
     if args.do_eval:
