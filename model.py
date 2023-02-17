@@ -14,7 +14,7 @@ class VGG19(nn.Module):
         self.conv3_512b = self.__make_layer(512, 4)
         self.fc = nn.Linear(512, 7)
 
-    def forward(self, x):
+    def forward(self, x, labels=None):
         out = self.conv3_64(x)
         out = F.max_pool2d(out, 2)
         out = self.conv3_128(out)
@@ -28,7 +28,12 @@ class VGG19(nn.Module):
         out = out.view(out.size(0), -1)
         out = F.dropout(out, p=0.5, training=self.training)
         out = self.fc(out)
-        return out
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(out, labels)
+            return loss, out
+        else:
+            return out
 
     def __make_layer(self, channels, num):
         layers = []

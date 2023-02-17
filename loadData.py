@@ -1,5 +1,6 @@
 import numpy as np
 import h5py
+import torch
 from torch.utils.data import Dataset
 from PIL import Image
 
@@ -30,7 +31,7 @@ class FERDataSet(Dataset):
         img = Image.fromarray(img)
         if self.transform is not None:
             img = self.transform(img)
-        return img, label
+        return img, torch.tensor(label)
 
     def __len__(self):
         return len(self.features)
