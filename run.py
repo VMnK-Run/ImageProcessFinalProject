@@ -1,12 +1,11 @@
 import warnings
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import numpy as np
-from model import VGG19
+from model import VGG19, ResNet18
 import logging
 import colorlog
 import argparse
@@ -19,7 +18,7 @@ import csv
 warnings.filterwarnings('ignore')
 
 USE_GPU = True
-LOG_TO_FILE = False
+LOG_TO_FILE = True
 logger = logging.getLogger(__name__)
 
 log_colors_config = {
@@ -29,13 +28,6 @@ log_colors_config = {
     'ERROR': 'red',
     'CRITICAL': 'bold_red',
 }
-
-console_handler = logging.StreamHandler()
-file_handler = logging.FileHandler(filename='./log/run.log', mode='a', encoding='utf8')
-
-logger.setLevel(logging.DEBUG)
-console_handler.setLevel(logging.DEBUG)
-file_handler.setLevel(logging.INFO)
 
 # 日志输出格式
 file_formatter = logging.Formatter(
@@ -48,16 +40,6 @@ console_formatter = colorlog.ColoredFormatter(
     log_colors=log_colors_config
 )
 
-console_handler.setFormatter(console_formatter)
-file_handler.setFormatter(file_formatter)
-
-if not logger.handlers:
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler) if LOG_TO_FILE else 0
-
-console_handler.close()
-file_handler.close()
-
 transform_train = transforms.Compose([
     transforms.RandomCrop(44),
     transforms.RandomHorizontalFlip(),
@@ -65,7 +47,8 @@ transform_train = transforms.Compose([
 ])
 
 transform_test = transforms.Compose([
-    transforms.ToTensor()
+    transforms.TenCrop(44),
+    transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops]))
 ])
 
 train_acc_history = []
@@ -106,6 +89,7 @@ def train(args, model, train_dataset, device):
         correct_num = 0
         train_acc = 0.0
         eval_acc = 0.0
+        avg_loss = 0.0
         bar = tqdm(train_dataloader, total=len(train_dataloader))
         for step, batch in enumerate(bar):
             inputs = batch[0].to(device)
@@ -129,6 +113,7 @@ def train(args, model, train_dataset, device):
             train_acc = correct_num / total_num
 
             bar.set_description("epoch {} loss {} train_acc {}".format(epoch, avg_loss, train_acc))
+        logger.info("Epoch {} loss {} train_acc {}".format(epoch, avg_loss, train_acc))
         results = evaluate(args, model, device)
         if results['eval_acc'] > best_acc:
             best_acc = results['eval_acc']
@@ -163,7 +148,7 @@ def evaluate(args, model, device):
         eval_dataloader = None
 
     # Eval!
-    logger.info("\n***** Running evaluation *****")
+    logger.info("***** Running evaluation *****")
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
 
@@ -171,14 +156,16 @@ def evaluate(args, model, device):
     logits = []
     y_trues = []
     for batch in eval_dataloader:
-        inputs = batch[0].to(device)
+        inputs = batch[0]
+        batch_size, ncrops, c, h, w = np.shape(inputs)
+        inputs = inputs.view(-1, c, h, w).to(device)
         label = batch[1].to(device)
-        inputs, label = Variable(inputs), Variable(label)
+        inputs, label = Variable(inputs, volatile=True), Variable(label)
         with torch.no_grad():
             logit = model(inputs)
+            logit = logit.view(batch_size, ncrops, -1).mean(1)
             logits.append(logit.cpu().numpy())
             y_trues.append(label.cpu().numpy())
-
     logits = np.concatenate(logits, 0)
     y_trues = np.concatenate(y_trues, 0)
 
@@ -202,9 +189,10 @@ def evaluate(args, model, device):
         "eval_f1": float(f1)
     }
 
-    logger.info("***** Eval results *****")
-    for key in sorted(result.keys()):
-        logger.info("  %s = %s", key, str(round(result[key], 4)))
+    if args.do_train:
+        logger.info("***** Eval results *****")
+        for key in sorted(result.keys()):
+            logger.info("  %s = %s", key, str(round(result[key], 4)))
 
     return result
 
@@ -226,14 +214,16 @@ def test(args, model, device):
     logits = []
     y_trues = []
     for batch in test_dataloader:
-        inputs = batch[0].to(device)
+        inputs = batch[0]
+        batch_size, ncrops, c, h, w = np.shape(inputs)
+        inputs = inputs.view(-1, c, h, w).to(device)
         label = batch[1].to(device)
-        inputs, label = Variable(inputs), Variable(label)
+        inputs, label = Variable(inputs, volatile=True), Variable(label)
         with torch.no_grad():
             logit = model(inputs)
+            logit = logit.view(batch_size, ncrops, -1).mean(1)
             logits.append(logit.cpu().numpy())
             y_trues.append(label.cpu().numpy())
-
     logits = np.concatenate(logits, 0)
     y_trues = np.concatenate(y_trues, 0)
 
@@ -256,10 +246,6 @@ def test(args, model, device):
         "eval_precision": float(precision),
         "eval_f1": float(f1)
     }
-
-    logger.info("***** Test results *****")
-    for key in sorted(result.keys()):
-        logger.info("  %s = %s", key, str(round(result[key], 4)))
 
     return result
 
@@ -289,11 +275,31 @@ def main():
     args.n_gpu = torch.cuda.device_count()
     device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
 
+    console_handler = logging.StreamHandler()
+    log_file_name = './log/' + args.model + '_' + args.dataset + '_' + 'train.log' if args.do_train else 'eval.log' if args.do_eval else 'test.log'
+    file_handler = logging.FileHandler(filename=log_file_name, mode='a', encoding='utf8')
+
+    logger.setLevel(logging.DEBUG)
+    console_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
+
+    console_handler.setFormatter(console_formatter)
+    file_handler.setFormatter(file_formatter)
+
+    if not logger.handlers:
+        logger.addHandler(console_handler)
+        logger.addHandler(file_handler) if LOG_TO_FILE else 0
+
+    console_handler.close()
+    file_handler.close()
+
     logger.info("Training/evaluation parameters: %s", args)
     logger.info("device: %s", device)
 
     if args.model == "vgg":
         model = VGG19()
+    elif args.model == "resnet":
+        model = ResNet18()
     else:
         model = None
 
@@ -303,7 +309,7 @@ def main():
             train(args, model, train_dataset, device)
 
     if args.do_eval:
-        model_dir = './models/' + args.model + '_' + args.dataset + '_.bin'
+        model_dir = './models/' + args.model + '_' + args.dataset + '.t7'
         model.load_state_dict(torch.load(model_dir)['model'])
         model.to(device)
         result = evaluate(args, model, device)
@@ -312,10 +318,10 @@ def main():
             logger.info("  %s = %s", key, str(round(result[key], 4)))
 
     if args.do_test:
-        model_dir = './models/' + args.model + '_' + args.dataset + '.bin'
+        model_dir = './models/' + args.model + '_' + args.dataset + '.t7'
         model.load_state_dict(torch.load(model_dir)['model'])
         model.to(device)
-        result = evaluate(args, model, device)
+        result = test(args, model, device)
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(round(result[key], 4)))
