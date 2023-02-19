@@ -14,6 +14,13 @@ from loadData import FERDataSet, CKDataSet
 import utils
 import os
 import csv
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import itertools
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+mpl.use('TkAgg')  # !IMPORTANT
+
 
 warnings.filterwarnings('ignore')
 
@@ -53,6 +60,41 @@ transform_test = transforms.Compose([
 
 train_acc_history = []
 eval_acc_history = []
+
+
+def plot_confusion_matrix(cm, classes,
+                          normalize=False,
+                          title='Confusion matrix',
+                          cmap=plt.cm.Blues):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    """
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        print("Normalized confusion matrix")
+    else:
+        print('Confusion matrix, without normalization')
+
+    # print(cm)
+
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title, fontsize=16)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j], fmt),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+
+    plt.ylabel('True label', fontsize=18)
+    plt.xlabel('Predicted label', fontsize=18)
+    plt.tight_layout()
 
 
 def train(args, model, train_dataset, device):
@@ -258,6 +300,20 @@ def test(args, model, device):
         "eval_f1": float(f1)
     }
 
+    if args.show_confusion:
+        from sklearn.metrics import confusion_matrix
+        # Compute confusion matrix
+        matrix = confusion_matrix(y_trues.data, y_preds)
+        np.set_printoptions(precision=2)
+        class_names = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral']
+        # Plot normalized confusion matrix
+        plt.figure(figsize=(10, 8))
+        plot_confusion_matrix(matrix, classes=class_names, normalize=True,
+                              title=' Confusion Matrix (Accuracy: %0.3f%%)' % accuracy)
+        png_path = './log/' + args.model + '_' + args.dataset + '_confusion.png'
+        plt.savefig(png_path)
+        plt.show()
+        plt.close()
     return result
 
 
@@ -283,6 +339,8 @@ def main():
                         help="learning rate")
     parser.add_argument("--resume", action="store_true",
                         help="Resume training")
+    parser.add_argument("--show_confusion", action="store_true",
+                        help="Whether show confusion")
 
     args = parser.parse_args()
     args.n_gpu = torch.cuda.device_count()
